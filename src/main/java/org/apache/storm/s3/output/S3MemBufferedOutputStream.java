@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
+ * <p/>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p/>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,12 +17,20 @@
  */
 package org.apache.storm.s3.output;
 
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import org.apache.storm.s3.format.FileNameFormat;
+import org.apache.storm.guava.util.concurrent.ListenableFuture;
+import org.apache.storm.s3.format.AbstractFileNameFormat;
+import org.apache.storm.s3.output.upload.Uploader;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.concurrent.ExecutionException;
 
 /**
  * OutputStream that buffers data in memory before writing it to S3
@@ -33,17 +41,29 @@ public class S3MemBufferedOutputStream<T> extends OutputStream {
 
     private final String bucketName;
     private final String contentType;
-    private final FileNameFormat fileNameFormat;
+    private final AbstractFileNameFormat fileNameFormat;
     private final ByteArrayOutputStream outputStream;
     private final Uploader uploader;
+    private final String identifier;
+    private final int rotation;
+    private final String suffix;
+    private final OutputStream writingStream;
 
     public S3MemBufferedOutputStream(Uploader uploader, String bucketName,
-                                     FileNameFormat fileNameFormat, String contentType) {
+          AbstractFileNameFormat fileNameFormat, String contentType, ContentEncoding encoding,
+          String
+                identifier, int rotationNumber) throws IOException {
         this.outputStream = new ByteArrayOutputStream();
+        this.writingStream = encoding.encode(this.outputStream);
+        this.suffix = encoding.getSuffix();
+
         this.uploader = uploader;
         this.bucketName = bucketName;
         this.fileNameFormat = fileNameFormat;
+
         this.contentType = contentType;
+        this.identifier = identifier;
+        this.rotation = rotationNumber;
     }
 
     @Override
@@ -52,24 +72,29 @@ public class S3MemBufferedOutputStream<T> extends OutputStream {
     }
 
     @Override
-    public void close() throws IOException  {
-        close(0);
+    public void close() throws IOException {
+        try {
+            commit().get();
+        } catch (InterruptedException | ExecutionException e) {
+            throw new IOException(e);
+        }
     }
 
-    public void close(long rotation) throws IOException {
-        close(null, "", rotation);
+    public int size() {
+        return this.outputStream.size();
     }
 
-    public void close(T key, String identifier, long rotation) throws IOException {
-        String name = fileNameFormat.getName(identifier, rotation, System.currentTimeMillis());
-        LOG.info("uploading {}/{} to S3",bucketName, name);
-        outputStream.close();
+    public ListenableFuture commit() throws IOException {
+        String name = fileNameFormat.getName(null, identifier, rotation,
+              System.currentTimeMillis()) + suffix;
+        LOG.info("uploading {}/{} to S3", bucketName, name);
+        writingStream.close();
         final byte[] buf = outputStream.toByteArray();
-        InputStream input = new ByteArrayInputStream(buf);
-        ObjectMetadata meta = new ObjectMetadata();
-        meta.setContentType(contentType);
-        meta.setContentLength(buf.length);
-        uploader.upload(key, bucketName, name, input, meta);
-        input.close();
+        try (InputStream input = new ByteArrayInputStream(buf)) {
+            ObjectMetadata meta = new ObjectMetadata();
+            meta.setContentType(contentType);
+            meta.setContentLength(buf.length);
+            return uploader.upload(null, bucketName, name, input, meta);
+        }
     }
 }

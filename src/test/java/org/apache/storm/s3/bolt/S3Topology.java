@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
+ * <p/>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p/>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,117 +17,87 @@
  */
 package org.apache.storm.s3.bolt;
 
-import backtype.storm.Config;
-import backtype.storm.LocalCluster;
-import backtype.storm.StormSubmitter;
-import backtype.storm.spout.SpoutOutputCollector;
-import backtype.storm.task.TopologyContext;
-import backtype.storm.topology.OutputFieldsDeclarer;
-import backtype.storm.topology.TopologyBuilder;
-import backtype.storm.topology.base.BaseRichSpout;
-import backtype.storm.tuple.Fields;
-import backtype.storm.tuple.Values;
+import org.apache.storm.s3.S3DependentTests;
+import org.apache.storm.s3.format.AbstractFileNameFormat;
+import org.apache.storm.s3.format.DefaultFileNameFormat;
+import org.apache.storm.s3.format.DelimitedRecordFormat;
+import org.apache.storm.s3.format.RecordFormat;
+import org.apache.storm.s3.format.S3OutputConfiguration;
+import org.apache.storm.s3.output.upload.BlockingTransferManagerUploader;
+import org.apache.storm.s3.output.upload.Uploader;
+import org.apache.storm.s3.rotation.FileRotationPolicy;
+import org.apache.storm.s3.rotation.FileSizeRotationPolicy;
+import org.apache.storm.s3.upload.SpyingUploader;
 
+import org.junit.Test;
+import org.junit.experimental.categories.Category;
+
+import backtype.storm.Config;
+import backtype.storm.StormSubmitter;
+import backtype.storm.topology.TopologyBuilder;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
-import static org.apache.storm.s3.output.S3Configuration.*;
+/**
+ * A simple test topology for writing to S3. You can run the topology through {@link #main
+ * (String[])} or as part of the test suite.
+ */
+@Category(S3DependentTests.class)
+public class S3Topology extends BaseS3Topology {
 
-public class S3Topology {
-    static final String SENTENCE_SPOUT_ID = "sentence-spout";
-    static final String BOLT_ID = "my-bolt";
-    static final String TOPOLOGY_NAME = "test-topology";
+    /**
+     * Spin up a small storm cluster that writes 3 small files to s3 before stopping.
+     */
+    @Test
+    public void testCluster() throws Exception {
+        String bucket = randomBucket();
+        BaseS3Topology.Cluster cluster = getCluster(BaseS3Topology.TOPOLOGY_NAME, bucket);
+        cluster.start();
+        cluster.stopAfter(bucket, 3);
+    }
 
+    /**
+     * Run the cluster. If you supply a configuration you can submit a topology to a real cluster
+     * . However, the {@link SpyingUploader} blocking ability is not supported in non-JVM-local
+     * clusters
+     *
+     * @param args name of the topology
+     * @throws Exception
+     */
     public static void main(String[] args) throws Exception {
-        Config config = new Config();
-        config.put(PREFIX, "test");
-        config.put(EXTENSION, ".txt");
-        config.put(PATH, "foo");
-        config.put(ROTATION_SIZE, 1.0F);
-        config.put(ROTATION_UNIT, "MB");
-        config.put(BUCKET_NAME, "test-bucket");
-        config.put(CONTENT_TYPE, "text/plain");
-        SentenceSpout spout = new SentenceSpout();
-
-        S3Bolt bolt = new S3Bolt();
-
-        TopologyBuilder builder = new TopologyBuilder();
-
-        builder.setSpout(SENTENCE_SPOUT_ID, spout, 1);
-        // SentenceSpout --> MyBolt
-        builder.setBolt(BOLT_ID, bolt, 2).shuffleGrouping(SENTENCE_SPOUT_ID);
-
+        Map config = new Config();
         if (args.length == 0) {
-            LocalCluster cluster = new LocalCluster();
-            cluster.submitTopology(TOPOLOGY_NAME, config, builder.createTopology());
-            waitForSeconds(120);
-            cluster.killTopology(TOPOLOGY_NAME);
-            cluster.shutdown();
+            BaseS3Topology.Cluster cluster = getCluster(
+                  BaseS3Topology.TOPOLOGY_NAME, BaseS3Topology.BUCKET_NAME);
+            cluster.start();
+            cluster.stopAfter(BaseS3Topology.BUCKET_NAME, 3);
             System.exit(0);
         } else if (args.length == 1) {
-            StormSubmitter.submitTopology(args[0], config, builder.createTopology());
+            StormSubmitter
+                  .submitTopology(args[0], config, getTopology(args[1], BaseS3Topology.BUCKET_NAME)
+                        .createTopology());
         } else {
             System.out.println("Usage: S3Topology [topology name]");
         }
     }
 
-    public static void waitForSeconds(int seconds) {
-        try {
-            Thread.sleep(seconds * 1000);
-        } catch (InterruptedException e) {
-        }
+    private static BaseS3Topology.Cluster getCluster(String topology, String bucketName) {
+        BaseS3Topology.Cluster ret = new BaseS3Topology.Cluster();
+        ret.setBuilder(getTopology(topology, bucketName));
+        ret.setTopologyName(topology);
+        return ret;
     }
 
-    public static class SentenceSpout extends BaseRichSpout {
-        private ConcurrentHashMap<UUID, Values> pending;
-        private SpoutOutputCollector collector;
-        private String[] sentences = {
-                "my dog has fleas",
-                "i like cold beverages",
-                "the dog ate my homework",
-                "don't have a cow man",
-                "i don't think i like fleas"
-        };
-        private int index = 0;
-        private int count = 0;
-        private long total = 0L;
+    private static TopologyBuilder getTopology(String topologyName, String bucketName) {
+        S3Bolt bolt = getBasicBolt(bucketName);
+        // setup the uploader and a spy to allow us to stop after a known number of files
+        Uploader uploader = new BlockingTransferManagerUploader();
+        uploader.setEphemeralBucketForTesting(true);
+        SpyingUploader spy = new SpyingUploader();
+        spy.withDelegate(uploader);
+        spy.withNameSpace(topologyName);
+        bolt.setUploader(spy);
 
-        public void declareOutputFields(OutputFieldsDeclarer declarer) {
-            declarer.declare(new Fields("sentence", "timestamp"));
-        }
-
-        public void open(Map config, TopologyContext context,
-                         SpoutOutputCollector collector) {
-            this.collector = collector;
-            this.pending = new ConcurrentHashMap<UUID, Values>();
-        }
-
-        public void nextTuple() {
-            Values values = new Values(sentences[index], System.currentTimeMillis());
-            UUID msgId = UUID.randomUUID();
-            this.pending.put(msgId, values);
-            this.collector.emit(values, msgId);
-            index++;
-            if (index >= sentences.length) {
-                index = 0;
-            }
-            count++;
-            total++;
-            if (count > 20000) {
-                count = 0;
-                System.out.println("Pending count: " + this.pending.size() + ", total: " + this.total);
-            }
-            Thread.yield();
-        }
-
-        public void ack(Object msgId) {
-            this.pending.remove(msgId);
-        }
-
-        public void fail(Object msgId) {
-            System.out.println("**** RESENDING FAILED TUPLE");
-            this.collector.emit(this.pending.get(msgId), msgId);
-        }
+        return buildTopology(bolt);
     }
 }

@@ -21,6 +21,8 @@ package org.apache.storm.s3.rotation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
+
 /**
  * File rotation policy that will rotate files when a certain
  * file size is reached.
@@ -60,6 +62,13 @@ public class FileSizeRotationPolicy implements FileRotationPolicy {
         this.maxBytes = (long) (count * units.getByteCount());
     }
 
+    /**
+     * @return the max number of bytes written to a file.
+     */
+    public long getMaxBytes(){
+        return maxBytes;
+    }
+
     @Override
     public boolean mark(long byteCount) {
         bytesWritten += byteCount;
@@ -70,5 +79,11 @@ public class FileSizeRotationPolicy implements FileRotationPolicy {
     public void reset() {
         bytesWritten = 0;
     }
+
+    @Override
+    public void prepare(Map stormConf) {
+        //  noop
+    }
+
 
 }

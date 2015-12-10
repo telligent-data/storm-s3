@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
+ * <p/>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p/>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,52 +17,18 @@
  */
 package org.apache.storm.s3.format;
 
+import org.apache.storm.guava.base.Joiner;
+
 /**
  *
  */
-public class DefaultFileNameFormat implements FileNameFormat {
+public class DefaultFileNameFormat extends AbstractFileNameFormat {
 
-    public static final String DELIMITER = "-";
-    private String path = "storm/";
-    private String prefix = "";
-    private String extension = ".txt";
-
-    /**
-     * Overrides the default prefix.
-     *
-     * @param prefix
-     * @return
-     */
-    public DefaultFileNameFormat withPrefix(String prefix) {
-        this.prefix = prefix;
-        return this;
-    }
-
-    /**
-     * Overrides the default file extension.
-     *
-     * @param extension
-     * @return
-     */
-    public DefaultFileNameFormat withExtension(String extension) {
-        this.extension = extension;
-        return this;
-    }
-
-    public DefaultFileNameFormat withPath(String path) {
-        if (null == path) {
-            path = "";
-        }
-        this.path = path;
-        if (!this.path.endsWith("/")) {
-            this.path = this.path + "/";
-        }
-        return this;
-    }
-
-    @Override
-    public String getName(String identifier, long rotation, long timeStamp) {
-        return this.path + this.prefix + DELIMITER + identifier + DELIMITER + rotation + DELIMITER + timeStamp + this.extension;
-    }
+  @Override
+  public String getName(Object key, String identifier, long rotation, long timeStamp) {
+    return Joiner.on(this.delimiter)
+                 .join(this.path + this.prefix, identifier, rotation,
+                     timeStamp + this.extension);
+  }
 
 }

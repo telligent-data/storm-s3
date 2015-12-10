@@ -15,26 +15,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.storm.s3.output.trident;
+package org.apache.storm.s3.output.upload;
 
-import org.apache.storm.s3.output.UploaderFactory;
-import org.apache.storm.s3.output.Uploader;
 
-import java.util.Map;
+import org.apache.storm.guava.util.concurrent.Futures;
+import org.apache.storm.guava.util.concurrent.ListenableFuture;
 
-public class DefaultS3TransactionalOutputFactory<T> implements S3TransactionalOutputFactory<T> {
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.model.PutObjectRequest;
 
-    private Uploader transferManager;
+import java.io.IOException;
+import java.io.InputStream;
+
+public class PutRequestUploader extends Uploader {
 
     @Override
-    public S3TransactionalOutput build(T key, Map conf, FileOutputFactory fileOutputFactory) {
-        return new DefaultS3TransactionalOutput(key, conf, getUploader(conf), fileOutputFactory);
+    public ListenableFuture<Void> upload(String bucketName, String name, InputStream input,
+          ObjectMetadata meta) throws IOException {
+        client.putObject(new PutObjectRequest(bucketName, name, input, meta));
+        return Futures.immediateFuture(null);
     }
 
-    private Uploader getUploader(Map conf) {
-        if (transferManager == null) {
-            transferManager = UploaderFactory.buildUploader(conf);
-        }
-        return transferManager;
-    }
 }
